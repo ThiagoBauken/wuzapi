@@ -883,6 +883,31 @@ paths:
             application/json:
               schema:
                 example: { "code": 200, "data": { "Details": "User unblocked", "JID": "5491155553935@s.whatsapp.net", "Blocklist": [], "DHash": "1234567891" }, "success": true }
+  /user/profile/name:
+    post:
+      tags:
+        - User
+      summary: Set the account profile (push) name
+      description: Sets the WhatsApp profile name shown to other users. Requires a connected session whose initial app-state sync after pairing has completed (returns 409 until then).
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Name:
+                  type: string
+                  example: "My Business"
+      responses:
+        200:
+          description: Profile name set
+          content:
+            application/json:
+              schema:
+                example: { "code": 200, "data": { "Details": "Profile name set", "Name": "My Business" }, "success": true }
   /user/lid/{phone}:
     get:
       tags:

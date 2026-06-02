@@ -114,6 +114,7 @@ func deleteKillChannel(userID string) {
 func signalKill(userID string) {
 	ch, ok := getKillChannel(userID)
 	if !ok {
+		log.Debug().Str("userID", userID).Msg("signalKill: no kill channel registered (already cleaned up?)")
 		return
 	}
 	select {

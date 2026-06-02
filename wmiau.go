@@ -652,31 +652,24 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		}
 	}
 
-	// Keep connected client live until disconnected/killed. Read the kill
-	// channel once through the mutex-guarded helper; the goroutine then listens
-	// on its own channel for the rest of its life, so it neither re-locks the
-	// mutex every second nor risks switching to a replaced channel.
-	kill, _ := getKillChannel(userID)
-	for {
-		select {
-		case <-kill:
-			log.Info().Str("userid", userID).Msg("Received kill signal")
-			client.Disconnect()
-			clientManager.DeleteWhatsmeowClient(userID)
-			clientManager.DeleteMyClient(userID)
-			clientManager.DeleteHTTPClient(userID)
-			sqlStmt := `UPDATE users SET qrcode='', connected=0 WHERE id=$1`
-			_, err := s.db.Exec(sqlStmt, userID)
-			if err != nil {
-				log.Error().Err(err).Msg(sqlStmt)
-			}
-			deleteKillChannel(userID)
-			return
-		default:
-			time.Sleep(1000 * time.Millisecond)
-			//log.Info().Str("jid",textjid).Msg("Loop the loop")
-		}
+	// Keep the session goroutine alive until a kill signal arrives. Block on the
+	// channel (captured once via the mutex-guarded helper) instead of polling —
+	// this parks the goroutine with zero CPU and no per-second mutex access.
+	kill, ok := getKillChannel(userID)
+	if !ok {
+		log.Error().Str("userid", userID).Msg("no kill channel registered for session; goroutine exiting")
+		return
 	}
+	<-kill
+	log.Info().Str("userid", userID).Msg("Received kill signal")
+	client.Disconnect()
+	clientManager.DeleteWhatsmeowClient(userID)
+	clientManager.DeleteMyClient(userID)
+	clientManager.DeleteHTTPClient(userID)
+	if _, err := s.db.Exec(`UPDATE users SET qrcode='', connected=0 WHERE id=$1`, userID); err != nil {
+		log.Error().Err(err).Msg("failed to mark user disconnected on kill")
+	}
+	deleteKillChannel(userID)
 }
 
 func fileToBase64(filepath string) (string, string, error) {

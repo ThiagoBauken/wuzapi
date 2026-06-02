@@ -2607,7 +2607,9 @@ func (s *server) SetProfileName() http.HandlerFunc {
 		err := client.SendAppState(r.Context(), appstate.BuildSettingPushName(t.Name))
 		if err != nil {
 			// App state keys only exist after the initial post-pairing sync.
-			// Surface that as a clear client error rather than a generic 500.
+			// whatsmeow exposes no typed/sentinel error for this, so we match on
+			// the message text — fragile, revisit if whatsmeow adds a typed error.
+			// Any other failure falls through to a 500 with the wrapped error.
 			if strings.Contains(err.Error(), "app state keys") {
 				s.Respond(w, r, http.StatusConflict, errors.New("profile name not settable yet: app state not synced — reconnect once after pairing and retry"))
 				return

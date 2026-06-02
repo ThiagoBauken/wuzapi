@@ -319,7 +319,10 @@ func (s *server) connectOnStartup() {
 }
 
 func parseJID(arg string) (types.JID, bool) {
-	if arg[0] == '+' {
+	if arg == "" {
+		return types.JID{}, false
+	}
+	if strings.HasPrefix(arg, "+") {
 		arg = arg[1:]
 	}
 	if !strings.ContainsRune(arg, '@') {

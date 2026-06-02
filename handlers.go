@@ -5928,20 +5928,43 @@ func (s *server) Respond(w http.ResponseWriter, r *http.Request, status int, dat
 		dataenvelope["error"] = err.Error()
 		dataenvelope["success"] = false
 	} else {
-		// Try to unmarshal into a map first
-		var mydata map[string]interface{}
-		if err := json.Unmarshal([]byte(data.(string)), &mydata); err == nil {
-			dataenvelope["data"] = mydata
-		} else {
-			// If unmarshaling into a map fails, try as a slice
-			var mySlice []interface{}
-			if err := json.Unmarshal([]byte(data.(string)), &mySlice); err == nil {
-				dataenvelope["data"] = mySlice
-			} else {
-				log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("error unmarshalling JSON")
+		// A non-error payload is a success unless the status code says otherwise.
+		// Previously this branch always set success=true and did an unchecked
+		// data.(string), so a non-string value panicked, and a plain non-JSON
+		// string (passed by many handlers on error paths) was dropped while
+		// still reporting success=true.
+		success := status < http.StatusBadRequest
+		if str, ok := data.(string); ok {
+			// Only attempt to parse when the payload actually looks like a JSON
+			// object or array — avoids two failed unmarshals on plain text,
+			// the common case for error messages. If it isn't JSON, surface the
+			// raw string instead of discarding it.
+			trimmed := strings.TrimSpace(str)
+			parsed := false
+			if strings.HasPrefix(trimmed, "{") {
+				var mydata map[string]interface{}
+				if json.Unmarshal([]byte(trimmed), &mydata) == nil {
+					dataenvelope["data"] = mydata
+					parsed = true
+				}
+			} else if strings.HasPrefix(trimmed, "[") {
+				var mySlice []interface{}
+				if json.Unmarshal([]byte(trimmed), &mySlice) == nil {
+					dataenvelope["data"] = mySlice
+					parsed = true
+				}
 			}
+			if !parsed {
+				if success {
+					dataenvelope["data"] = str
+				} else {
+					dataenvelope["error"] = str
+				}
+			}
+		} else {
+			dataenvelope["data"] = data
 		}
-		dataenvelope["success"] = true
+		dataenvelope["success"] = success
 	}
 
 	if err := json.NewEncoder(w).Encode(dataenvelope); err != nil {

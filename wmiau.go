@@ -62,6 +62,20 @@ func safeGo(name string, fn func()) {
 	}()
 }
 
+// newWebhookTransport builds the HTTP transport used for webhook delivery. TLS
+// verification and SSRF (private-IP) blocking are off by default to preserve the
+// existing behavior, and enabled via -webhookverifytls / -webhookblockprivateips
+// (issue #314).
+func newWebhookTransport() *http.Transport {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: !*webhookVerifyTLS},
+	}
+	if *webhookBlockPrivateIPs {
+		transport.DialContext = safeDialContext
+	}
+	return transport
+}
+
 // ensureS3ClientForUser loads S3 config from DB and initializes client if not already present (lazy init for reconnect-after-restart)
 func ensureS3ClientForUser(userID string) {
 	GetS3Manager().EnsureClientFromDB(userID)
@@ -459,7 +473,7 @@ func (s *server) startClient(userID string, textjid string, token string, kill c
 		httpClient.SetDebug(true)
 	}
 	httpClient.SetTimeout(30 * time.Second)
-	httpClient.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true})
+	httpClient.SetTransport(newWebhookTransport())
 	httpClient.OnError(func(req *resty.Request, err error) {
 		if v, ok := err.(*resty.ResponseError); ok {
 			// v.Response contains the last response from the server

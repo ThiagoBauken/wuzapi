@@ -70,6 +70,9 @@ var (
 	webhookRetryDelaySeconds = flag.Int("retrydelay", 30, "Delay in seconds between webhook retries")
 	webhookErrorQueueName    = flag.String("errorqueue", "webhook_errors", "RabbitMQ queue name for failed webhooks")
 
+	webhookVerifyTLS       = flag.Bool("webhookverifytls", false, "Verify TLS certificates when delivering webhooks (default false keeps the current behavior) (issue #314)")
+	webhookBlockPrivateIPs = flag.Bool("webhookblockprivateips", false, "Block webhook delivery to private/loopback IPs for SSRF protection (default false keeps the current behavior) (issue #314)")
+
 	container        *sqlstore.Container
 	clientManager    = NewClientManager()
 	killchannel      = make(map[string](chan bool))
@@ -133,64 +136,67 @@ func signalKill(userID string) {
 
 func newSafeHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				host, port, err := net.SplitHostPort(addr)
-				if err != nil {
-					return nil, fmt.Errorf("unexpected address format from http transport: %q: %w", addr, err)
-				}
-
-				ips, err := net.LookupIP(host)
-				if err != nil {
-					return nil, fmt.Errorf("failed to resolve host '%s': %w", host, err)
-				}
-				if len(ips) == 0 {
-					return nil, fmt.Errorf("no IP addresses found for host: %s", host)
-				}
-
-				var (
-					lastDialErr   error
-					ssrfDetected  bool
-					ssrfLastError error
-				)
-
-				for _, ip := range ips {
-					if isPrivateOrLoopback(ip) {
-						log.Warn().Str("ip", ip.String()).Str("host", host).Msg("SSRF attempt detected: refused to connect to private or local address")
-						ssrfDetected = true
-						if ssrfLastError == nil {
-							ssrfLastError = fmt.Errorf("ssrf attempt detected: host '%s' resolves to one or more private IP addresses", host)
-						}
-						continue
-					}
-
-					dialer := &net.Dialer{
-						Timeout:   4 * time.Second,
-						KeepAlive: 30 * time.Second,
-					}
-
-					connAddr := net.JoinHostPort(ip.String(), port)
-					conn, err := dialer.DialContext(ctx, network, connAddr)
-					if err == nil {
-						return conn, nil
-					}
-					lastDialErr = err
-				}
-
-				if lastDialErr != nil {
-					return nil, lastDialErr
-				}
-				if ssrfDetected {
-					return nil, ssrfLastError
-				}
-				if lastDialErr != nil {
-					return nil, lastDialErr
-				}
-				return nil, fmt.Errorf("no dialable IP addresses found for host %s", host)
-			},
-		},
+		Timeout:   60 * time.Second,
+		Transport: &http.Transport{DialContext: safeDialContext},
 	}
+}
+
+// safeDialContext dials addr only after confirming that none of its resolved
+// IPs are private or loopback, blocking SSRF to internal services. It is shared
+// by the global HTTP client and, opt-in, by the webhook client (issue #314).
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("unexpected address format from http transport: %q: %w", addr, err)
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve host '%s': %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no IP addresses found for host: %s", host)
+	}
+
+	var (
+		lastDialErr   error
+		ssrfDetected  bool
+		ssrfLastError error
+	)
+
+	for _, ip := range ips {
+		if isPrivateOrLoopback(ip) {
+			log.Warn().Str("ip", ip.String()).Str("host", host).Msg("SSRF attempt detected: refused to connect to private or local address")
+			ssrfDetected = true
+			if ssrfLastError == nil {
+				ssrfLastError = fmt.Errorf("ssrf attempt detected: host '%s' resolves to one or more private IP addresses", host)
+			}
+			continue
+		}
+
+		dialer := &net.Dialer{
+			Timeout:   4 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+
+		connAddr := net.JoinHostPort(ip.String(), port)
+		conn, err := dialer.DialContext(ctx, network, connAddr)
+		if err == nil {
+			return conn, nil
+		}
+		lastDialErr = err
+	}
+
+	if lastDialErr != nil {
+		return nil, lastDialErr
+	}
+	if ssrfDetected {
+		return nil, ssrfLastError
+	}
+	if lastDialErr != nil {
+		return nil, lastDialErr
+	}
+	return nil, fmt.Errorf("no dialable IP addresses found for host %s", host)
 }
 
 func isPrivateOrLoopback(ip net.IP) bool {
@@ -261,6 +267,12 @@ func main() {
 	}
 	if v := os.Getenv("WEBHOOK_ERROR_QUEUE_NAME"); v != "" {
 		*webhookErrorQueueName = v
+	}
+	if v := os.Getenv("WUZAPI_WEBHOOK_VERIFY_TLS"); v != "" {
+		*webhookVerifyTLS = strings.ToLower(v) == "true" || v == "1"
+	}
+	if v := os.Getenv("WUZAPI_WEBHOOK_BLOCK_PRIVATE_IPS"); v != "" {
+		*webhookBlockPrivateIPs = strings.ToLower(v) == "true" || v == "1"
 	}
 
 	log.Info().
